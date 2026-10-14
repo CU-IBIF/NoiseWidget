@@ -11,7 +11,10 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
-ui = ["PySide6>=6.6"]
+# Upper bound, not caution: PySide6 6.12.0 over-decrefs None in setPen and aborts
+# the interpreter ("Fatal Python error: none_dealloc") on Python < 3.12 -- see
+# MicroscopeWidget, which hit it in CI. Lift the bound once a release fixes it.
+ui = ["PySide6>=6.6,!=6.12.0"]
 dev = ["pytest>=8.0", "pyyaml>=6.0"]
 
 [project.scripts]
