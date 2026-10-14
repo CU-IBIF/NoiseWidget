@@ -1,0 +1,191 @@
+name: Release
+
+# Executables, not installers: one self-contained file per platform, attached to a
+# GitHub Release. A student downloads one file and runs it -- no admin rights, no
+# Python, no pip.
+#
+# Two kinds of release come out of this one workflow:
+#
+#   push to main  -> a PRERELEASE tagged build-<run number>, so every commit on
+#                    main is downloadable. Marked prerelease so it never displaces
+#                    the "Latest release" badge that points at a real version.
+#   push of v*    -> a stable release under that tag.
+#
+# Running it by hand builds the same artifacts without publishing anything, which
+# is how to check a packaging change before it lands.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A rapid series of pushes should not run four builds each. Cancel superseded runs
+# on main; never cancel a tagged release, which is the one that matters.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            # Built on the oldest supported runner on purpose: glibc is forward
+            # compatible but not backward, so a binary built on 24.04 will not run
+            # on an older lab machine.
+            artifact: NoiseWidget
+            asset: NoiseWidget-linux-x86_64
+          - os: windows-latest
+            label: windows-x86_64
+            artifact: NoiseWidget.exe
+            asset: NoiseWidget-windows-x86_64.exe
+          - os: macos-15-intel
+            label: macos-x86_64
+            # macos-13 was the original Intel label here and never received a
+            # runner -- the image is retired, so the job sat queued indefinitely
+            # while every other platform finished in minutes. macos-15-intel is
+            # the current Intel image and schedules as fast as the rest.
+            artifact: NoiseWidget
+            asset: NoiseWidget-macos-x86_64
+          - os: macos-14
+            label: macos-arm64
+            artifact: NoiseWidget
+            asset: NoiseWidget-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # These must be present at BUILD time, not just at run time: PyInstaller
+      # bundles the Qt platform plugin's dependencies by resolving them on the
+      # build machine, and silently ships a broken xcb plugin if they are absent.
+      # libxcb-cursor0 in particular is required by Qt 6 and missing by default on
+      # many distributions, so bundling it is what makes the binary portable.
+      - name: Install Qt build and runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libgl1 libdbus-1-3 libfontconfig1 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xkb1 \
+            libxcb-xinerama0
+
+      - name: Install project and build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ui]"
+          # 6.22 or newer: earlier releases mishandle numpy 2.4's module layout and
+          # produce a binary that dies at startup on numpy._core._exceptions.
+          pip install "pyinstaller>=6.22"
+
+      - name: Run the test suite before packaging anything
+        run: pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Build the executable
+        run: pyinstaller packaging/noisewidget.spec --noconfirm --distpath dist --workpath build
+
+      - name: Smoke-test the built executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/${{ matrix.artifact }}"
+          test -f "$BIN" || { echo "no executable at $BIN"; ls -R dist; exit 1; }
+          if [ "${{ runner.os }}" != "Windows" ]; then chmod +x "$BIN"; fi
+          # Run the real model against the frozen binary, not just a file check: this
+          # is what catches a frozen import going missing.
+          QT_QPA_PLATFORM=offscreen "$BIN" --list-presets
+          QT_QPA_PLATFORM=offscreen "$BIN" --realizations 10 >/dev/null
+          QT_QPA_PLATFORM=offscreen "$BIN" --preset "Saturated" --realizations 10 >/dev/null
+
+      - name: Name the asset
+        shell: bash
+        run: |
+          mkdir -p release
+          cp "dist/${{ matrix.artifact }}" "release/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: release/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Hand-triggered runs produce downloadable artifacts but publish nothing.
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Decide what kind of release this is
+        id: kind
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "title=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            # One release per commit on main. Tagged by run number so the ordering
+            # is obvious, with the short SHA in the title so it is traceable.
+            echo "tag=build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "title=Development build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA:0:7})" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: List what will be published
+        run: ls -lh artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.kind.outputs.tag }}
+          name: ${{ steps.kind.outputs.title }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ steps.kind.outputs.prerelease }}
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Self-contained executables. Download the one for your platform and run
+            it -- no installer, no Python, no `pip`.
+
+            | Platform | File |
+            | --- | --- |
+            | Linux (x86_64) | `NoiseWidget-linux-x86_64` |
+            | Windows (x86_64) | `NoiseWidget-windows-x86_64.exe` |
+            | macOS (Intel) | `NoiseWidget-macos-x86_64` |
+            | macOS (Apple silicon) | `NoiseWidget-macos-arm64` |
+
+            On macOS and Linux, mark it executable first:
+            `chmod +x NoiseWidget-*`
+
+            The macOS and Windows builds are **not code-signed**, so the first
+            launch needs Right-click -> Open (macOS) or "More info" -> "Run anyway"
+            (Windows SmartScreen).
+
+            Every build runs the full test suite and then exercises the model
+            against the frozen binary before it is published.

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noisewidget"
+version = "0.1.0"
+description = "An interactive model of every noise source in a fluorescence micrograph, and what it does to quantitation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+ui = ["PySide6>=6.6"]
+dev = ["pytest>=8.0", "pyyaml>=6.0"]
+
+[project.scripts]
+noisewidget = "noisewidget.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["noisewidget*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
