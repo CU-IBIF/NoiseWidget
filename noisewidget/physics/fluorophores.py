@@ -22,6 +22,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 PLANCK = 6.62607015e-34
 LIGHT_SPEED = 2.99792458e8
 CROSS_SECTION_PER_EPSILON = 1000.0 * math.log(10) / 6.02214076e23  # cm^2 per (M^-1 cm^-1)
@@ -46,7 +48,8 @@ class Fluorophore:
 
     def absorption_rate(self, irradiance_w_cm2: float) -> float:
         """Absorptions per second at an irradiance in W/cm^2."""
-        return self.cross_section_cm2 * max(irradiance_w_cm2, 0.0) / self.photon_energy_j()
+        # np.maximum, not max: confocal passes a whole irradiance map at once.
+        return self.cross_section_cm2 * np.maximum(irradiance_w_cm2, 0.0) / self.photon_energy_j()
 
     def emission_rate(self, irradiance_w_cm2: float) -> float:
         """Emitted photons per second, with ground-state depletion."""

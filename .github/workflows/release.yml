@@ -111,6 +111,8 @@ jobs:
           QT_QPA_PLATFORM=offscreen "$BIN" --list-presets
           QT_QPA_PLATFORM=offscreen "$BIN" --realizations 10 >/dev/null
           QT_QPA_PLATFORM=offscreen "$BIN" --preset "Saturated" --realizations 10 >/dev/null
+          QT_QPA_PLATFORM=offscreen "$BIN" --frame confocal --realizations 10 >/dev/null
+          QT_QPA_PLATFORM=offscreen "$BIN" --preset "Counting too fast: dead time" --realizations 10 >/dev/null
 
       - name: Name the asset
         shell: bash

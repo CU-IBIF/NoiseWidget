@@ -146,3 +146,73 @@ def test_an_impossible_setting_shows_a_problem_not_a_crash(window):
     widget.levers_panel.levers = Levers(na=1.45, medium="water")
     widget.refresh()
     assert not widget.problem.isHidden()
+
+
+# --- the confocal frame --------------------------------------------------------
+
+from noisewidget.physics.confocal import ScanLevers  # noqa: E402
+from noisewidget.physics.presets import CONFOCAL_PRESETS  # noqa: E402
+from noisewidget.ui.modality import CONFOCAL  # noqa: E402
+from noisewidget.ui.scan_controls import ScanLeverPanel  # noqa: E402
+
+
+def test_the_window_has_two_frames(window):
+    w = window()
+    assert w.frames.count() == 2
+    w.frames.setCurrentIndex(1)
+    QtWidgets.QApplication.processEvents()
+    assert w.widget.modality is CONFOCAL
+    assert w.widget.sim is not None
+    # The preset list follows the frame in front.
+    names = [w.presets.itemText(i) for i in range(w.presets.count())]
+    assert set(CONFOCAL_PRESETS) <= set(names)
+
+
+def test_opening_on_the_confocal(window):
+    w = window(ScanLevers(zoom=4.0))
+    assert w.widget.modality is CONFOCAL
+    assert w.widget.sim.levers.zoom == pytest.approx(4.0)
+
+
+def test_confocal_presets_round_trip(window):
+    w = window()
+    w.frames.setCurrentIndex(1)
+    for name, preset in CONFOCAL_PRESETS.items():
+        w.widget.load_preset(name)
+        lv = w.widget.sim.levers
+        assert (lv.zoom, lv.pixels_x, lv.pixels_y, lv.dwell_us) == (
+            preset.levers.zoom, preset.levers.pixels_x, preset.levers.pixels_y, preset.levers.dwell_us), name
+        assert lv.acquisition_mode == preset.levers.acquisition_mode, name
+
+
+def test_anisotropic_pixels_are_drawn_at_their_physical_aspect(window):
+    w = window(ScanLevers(pixels_x=512, pixels_y=128))
+    pane = w.widget.images.recorded
+    assert pane.image.height() * 4 == pytest.approx(pane.image.width(), rel=0.1)
+    rect = pane.image_rect()
+    assert rect.width() == pytest.approx(rect.height(), rel=0.05)  # a square field
+
+
+def test_a_detector_without_analog_forces_counting(app):
+    panel = ScanLeverPanel()
+    panel.detector.setCurrentText("SPAD / APD")
+    assert panel.levers.acquisition_mode == "counting"
+    assert not panel.gain.isEnabled()
+
+
+def test_confocal_scan_levers(app):
+    panel = ScanLeverPanel()
+    panel.pixels_y.setCurrentText("256")
+    panel.dwell.valueChanged.emit(10.0)
+    assert panel.levers.pixels_y == 256
+    assert panel.levers.dwell_us == pytest.approx(10.0)
+
+
+def test_live_follows_the_frame_in_front(window):
+    w = window()
+    w.live.setChecked(True)
+    assert w.widgets["camera"].live_timer.isActive()
+    w.frames.setCurrentIndex(1)
+    assert w.widgets["confocal"].live_timer.isActive()
+    assert not w.widgets["camera"].live_timer.isActive()
+    w.live.setChecked(False)

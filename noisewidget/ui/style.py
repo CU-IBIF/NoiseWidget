@@ -29,6 +29,9 @@ TERM_COLORS = {
     "dark_shot": "#c98500",
     "background_shot": "#d55181",
     "cic": "#9085e9",
+    # Laser intensity noise is the scanner's multiplicative term, as PRNU is the
+    # camera's; the two never share a frame, so they share the validated slot.
+    "laser": "#199e70",
     "quantization": "#7a828e",  # minor term: drawn dashed, never colour alone
     "total": "#e6edf3",
     "signal": "#e6edf3",

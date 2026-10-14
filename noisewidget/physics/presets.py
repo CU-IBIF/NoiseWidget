@@ -100,3 +100,89 @@ PRESETS: dict[str, Preset] = {
         ),
     )
 }
+
+
+# --- point-scanning confocal -----------------------------------------------------
+
+from .confocal import ScanLevers  # noqa: E402
+
+HPD = "Hybrid detector (GaAsP HPD)"
+
+CONFOCAL_PRESETS: dict[str, Preset] = {
+    p.name: p
+    for p in (
+        Preset(
+            "Confocal, 63x/1.40 oil, GaAsP analog",
+            "A typical setup: 1 AU pinhole, 70 nm pixels (Nyquist), 3.2 us dwell, a few tens of photons.",
+            ScanLevers(),
+        ),
+        Preset(
+            "Zoom 1: under-sampled",
+            "The whole 286 um field in 512 pixels: 558 nm pixels cannot carry a 180 nm PSF.",
+            ScanLevers(zoom=1.0),
+        ),
+        Preset(
+            "Zoom 30: over-sampled",
+            "19 nm pixels: the same photons per pixel (a scanner's pixel is a dwell, not an area), no new "
+            "detail, a 3.7x smaller field, and 14x the light dose per area -- so 14x the bleaching.",
+            ScanLevers(zoom=30.0, averages=4),
+        ),
+        Preset(
+            "512 x 128: y under-sampled",
+            "Fewer lines than pixels: x is at Nyquist, y skips 280 nm between lines -- a fast scan that misses things.",
+            ScanLevers(pixels_y=128),
+        ),
+        Preset(
+            "Short dwell (0.4 us)",
+            "Resonant-scanner speeds: a few photons per pixel, and the image is shot-noise mush.",
+            ScanLevers(dwell_us=0.4),
+        ),
+        Preset(
+            "... rescued by 8 line averages",
+            "The same fast scan averaged 8x: the photons of a 3.2 us dwell, spread over time.",
+            ScanLevers(dwell_us=0.4, averages=8),
+        ),
+        Preset(
+            "Saturating the fluorophore (200 uW)",
+            "k tau ~ 0.7: 13x the power buys only ~9x the signal, a wider PSF and faster bleaching.",
+            ScanLevers(laser_power_uw=200.0),
+        ),
+        Preset(
+            "Gain too low",
+            "0.15 ADU per photoelectron: the 1.5 ADU amplifier noise is now 10 photoelectrons, and the ADC "
+            "step is 7 -- single photons vanish.",
+            ScanLevers(gain_adu_per_e=0.15),
+        ),
+        Preset(
+            "Offset too low (black clipping)",
+            "A negative offset sends the background below zero ADU: it clips, the mean is wrong, counts halve.",
+            ScanLevers(offset_adu=-20.0),
+        ),
+        Preset(
+            "Gain too high (clipping)",
+            "60 ADU per photoelectron on a 12-bit ADC: full scale is 68 photons, and the filament clips.",
+            ScanLevers(gain_adu_per_e=60.0, laser_power_uw=40.0),
+        ),
+        Preset(
+            "Photon counting, hybrid detector",
+            "No gain noise (F^2 ~ 1), no amplifier, no ADC step: each photon is a count.",
+            ScanLevers(detector=HPD, mode="counting"),
+        ),
+        Preset(
+            "Counting too fast: dead time",
+            "A 20 ns dead time caps a 1 us dwell at 50 counts: the bright pixels lose counts and the profile "
+            "flattens -- unless dead-time correction is on.",
+            ScanLevers(mode="counting", laser_power_uw=100.0, dwell_us=1.0),
+        ),
+        Preset(
+            "Pinhole wide open (5 AU)",
+            "Little lateral gain from a 5 AU pinhole, and the haze it admits brings shot noise without signal.",
+            ScanLevers(pinhole_au=5.0, background_per_um2=300.0),
+        ),
+        Preset(
+            "Multialkali PMT",
+            "QE 20% instead of 40%: half the photoelectrons, so sqrt(2) less SNR for the same light.",
+            ScanLevers(detector="PMT, multialkali"),
+        ),
+    )
+}

@@ -178,7 +178,7 @@ def quant_rows(q: Quantitation) -> list[Row]:
         f"{q.predicted_fwhm_um * 1000:.0f} nm FWHM",
         f"2.355 sqrt(sigma_instrument^2 + sigma_label^2) = 2.355 sqrt({q.instrument_sigma_um * 1000:.1f}^2 + "
         f"{q.label_sigma_nm:.1f}^2) nm;  sigma_instrument is this system's fit to a thin line "
-        f"(PSF + pixels; textbook 0.21 lambda/NA = {q.psf_sigma_um * 1000:.0f} nm)",
+        f"(PSF + sampling; the PSF alone fits sigma ~ {q.psf_sigma_um * 1000:.0f} nm)",
     ))
     ok = q.success > 0
     bias = abs(q.fwhm.mean / q.ideal.fwhm_um - 1) if ok and q.ideal.ok else 0.0
