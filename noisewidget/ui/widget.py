@@ -24,22 +24,10 @@ import math
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..physics.acquisition import (
-    SWEEPS,
-    Budget,
-    Levers,
-    Simulator,
-    budget_sweep,
-    operating_value,
-    peak_signal,
-    simulation_budget,
-)
 from ..physics.base import Report, Status
-from ..physics.presets import PRESETS
 from ..physics.quantitation import QuantSettings, Quantitation, quantify, reference_window
-from ..physics.report import build_report
 from . import style
-from .controls import LeverPanel
+from .modality import CAMERA, MODALITIES, Modality
 from .panes import LUTS, ImageGrid, to_qimage
 from .plots import Band, BudgetBar, Marker, PlotCanvas, PlotSpec, Series
 
@@ -59,14 +47,15 @@ class NoiseGraph(QtWidgets.QWidget):
     detector would achieve with the same photons.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, modality: Modality = CAMERA, parent=None):
         super().__init__(parent)
+        self.modality = modality
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("x axis:"))
         self.mode = QtWidgets.QComboBox()
-        for key, label in SWEEPS.items():
+        for key, label in modality.sweeps.items():
             self.mode.addItem(label, key)
         row.addWidget(self.mode)
         row.addStretch(1)
@@ -91,25 +80,18 @@ class NoiseGraph(QtWidgets.QWidget):
         sim = self._sim
         if sim is None:
             return
+        m = self.modality
         mode = self.mode.currentData()
-        here = operating_value(sim, mode)
-        if mode == "signal":
-            xs = np.logspace(-1, 5, 160)
-            xlabel, unit = "signal per pixel (e-)", "e-"
-        elif mode == "exposure":
-            xs = np.logspace(-1, 4, 160)
-            xlabel, unit = "exposure (ms)", "ms"
-        else:
-            xs = np.logspace(-2, 3.3, 160)
-            xlabel, unit = "excitation (W/cm²)", "W/cm²"
-        budgets = budget_sweep(sim, mode, xs)
-        terms = Budget.TERMS
+        here = m.operating_value(sim, mode)
+        xs, xlabel, unit = m.sweep_axis(mode)
+        budgets = m.budget_sweep(sim, mode, xs)
+        terms, labels = budgets[0].TERMS, budgets[0].LABELS
         series = []
         for t in terms:
             y = np.array([math.sqrt(getattr(b, t)) for b in budgets])
             if not (y > 0).any():
                 continue
-            series.append(Series(xs, y, style.TERM_COLORS[t], Budget.LABELS[t], 2.0,
+            series.append(Series(xs, y, style.TERM_COLORS[t], labels[t], 2.0,
                                  dashed=(t == "quantization"), direct_label=False))
         total = np.array([b.noise_e for b in budgets])
         series.append(Series(xs, total, style.TERM_COLORS["total"], "total noise", 3.0, direct_label=True))
@@ -118,13 +100,14 @@ class NoiseGraph(QtWidgets.QWidget):
             series.insert(0, Series(xs, sig, "#5c6370", "signal", 1.5, dashed=True, direct_label=True))
 
         # Shade where read noise outweighs every shot term: the read-noise limit.
-        shot = np.array([b.photon_shot + b.background_shot + b.dark_shot + b.cic for b in budgets])
-        read = np.array([b.read for b in budgets])
+        shot_terms = ("photon_shot", "background_shot", "dark_shot", "cic")
+        shot = np.array([sum(getattr(b, t, 0.0) for t in shot_terms) for b in budgets])
+        read = np.array([sum(getattr(b, t) for t in m.electronics_terms) for b in budgets])
         bands = []
         limited = read > shot
         if limited.any():
             idx = np.nonzero(limited)[0]
-            bands.append(Band(xs[idx[0]], xs[idx[-1]], style.TERM_COLORS["read"], "read-noise limited"))
+            bands.append(Band(xs[idx[0]], xs[idx[-1]], style.TERM_COLORS["read"], m.electronics_label))
         markers = [Marker(here, "#e6edf3", "you are here")]
         if mode == "signal" and sim.background_e > 0:
             markers.append(Marker(sim.background_e, style.TERM_COLORS["background_shot"], "background"))
@@ -132,7 +115,7 @@ class NoiseGraph(QtWidgets.QWidget):
         ymin = max(min((s.y[s.y > 0].min() for s in series if (s.y > 0).any()), default=1e-2), 1e-2)
         ymax = max(s.y.max() for s in series)
         self.noise_plot.set_spec(PlotSpec(
-            title="noise per pixel, referred to the sensor input",
+            title=m.noise_title,
             xlabel=xlabel, ylabel="noise (e- rms)", xlog=True, ylog=True,
             xrange=(xs[0], xs[-1]), yrange=(ymin * 0.8, ymax * 1.3),
             series=series, markers=markers, bands=bands, x_unit=unit, y_unit="e-", legend_left=True,
@@ -152,9 +135,9 @@ class NoiseGraph(QtWidgets.QWidget):
             bands=bands, x_unit=unit, legend_left=True,
         ))
 
-        b = simulation_budget(sim)
-        self.bar.set_budget(b.fractions(), Budget.LABELS, f"variance at the structure: S = {b.signal_e:.3g} e-, noise {b.noise_e:.3g} e-")
-        self.headline.setText(f"SNR {b.snr:.3g}  ·  dominant: {Budget.LABELS[b.dominant()]}")
+        b = m.simulation_budget(sim)
+        self.bar.set_budget(b.fractions(), b.LABELS, f"variance at the structure: S = {b.signal_e:.3g} e-, noise {b.noise_e:.3g} e-")
+        self.headline.setText(f"SNR {b.snr:.3g}  ·  dominant: {b.LABELS[b.dominant()]}")
 
 
 # --- quantitation ----------------------------------------------------------------
@@ -320,9 +303,10 @@ class NoiseWidget(QtWidgets.QWidget):
     simulated = QtCore.Signal(object)  # the Simulation, after every recompute
     summaryChanged = QtCore.Signal(str)
 
-    def __init__(self, levers: Levers | None = None, parent=None):
+    def __init__(self, levers=None, parent=None, modality: Modality = CAMERA):
         super().__init__(parent)
-        self.simulator = Simulator()
+        self.modality = modality
+        self.simulator = modality.make_simulator()
         self.sim = None
         self.quant: Quantitation | None = None
         self.noise_seed = 0
@@ -331,7 +315,7 @@ class NoiseWidget(QtWidgets.QWidget):
         self.show_window = True
         self.show_saturation = True
 
-        self.levers_panel = LeverPanel(levers)
+        self.levers_panel = modality.make_panel(levers)
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.levers_panel)
@@ -339,7 +323,8 @@ class NoiseWidget(QtWidgets.QWidget):
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
 
         self.images = ImageGrid()
-        self.graph = NoiseGraph()
+        self.images.recorded.title = modality.recorded_title
+        self.graph = NoiseGraph(modality)
         self.quant_panel = QuantPanel()
         self.report_panel = ReportPanel()
         self.problem = QtWidgets.QLabel("")
@@ -386,15 +371,15 @@ class NoiseWidget(QtWidgets.QWidget):
     # --- state --------------------------------------------------------------
 
     @property
-    def levers(self) -> Levers:
+    def levers(self):
         return self.levers_panel.levers.with_(noise_seed=self.noise_seed)
 
-    def set_levers(self, levers: Levers) -> None:
+    def set_levers(self, levers) -> None:
         self.levers_panel.set_levers(levers)
         self.refresh()
 
     def load_preset(self, name: str) -> None:
-        self.set_levers(PRESETS[name].levers)
+        self.set_levers(self.modality.presets[name].levers)
 
     def new_noise(self) -> None:
         """Record another frame of the same scene: new noise, same everything else."""
@@ -435,14 +420,15 @@ class NoiseWidget(QtWidgets.QWidget):
         self.sim, self.quant = sim, q
         self._draw_images(sim, q)
         self.graph.show_simulation(sim)
-        sections = build_report(sim, q)
+        sections = self.modality.build_report(sim, q)
         self.quant_panel.show_quantitation(q, sections["quantitation"])
         self.report_panel.show_report(sections)
         self.simulated.emit(sim)
-        b = simulation_budget(sim)
+        b = self.modality.simulation_budget(sim)
+        px, py = sim.pixel_x_um * 1000, sim.pixel_y_um * 1000
         bits = [
-            f"pixel {sim.pixel_um * 1000:.0f} nm",
-            f"{peak_signal(sim):.3g} e- at the structure",
+            f"pixel {px:.0f} nm" if abs(px - py) < 0.5 else f"pixel {px:.0f} x {py:.0f} nm",
+            f"{self.modality.peak_signal(sim):.3g} e- at the structure",
             f"SNR {b.snr:.3g}",
             f"width {q.fit.fwhm_um * 1000:.0f} nm (true {q.true_diameter_nm:g})" if q.fit.ok else "width: no fit",
         ]
@@ -453,10 +439,10 @@ class NoiseWidget(QtWidgets.QWidget):
         self.summaryChanged.emit("   |   ".join(bits))
 
     def _draw_images(self, sim, q) -> None:
-        lv = sim.levers
-        cam = lv.camera_model
-        field_cam = sim.signal_e.shape[0] * sim.pixel_um
-        nm = lv.wavelength_um * 1000
+        info = self.modality.image_info(sim)
+        nm = info.wavelength_nm
+        fx, fy = info.extent_um
+        origin = info.origin_um
 
         # The object: block-summed to <= 256 px so 25 nm filaments survive display.
         obj = sim.specimen.density
@@ -474,9 +460,8 @@ class NoiseWidget(QtWidgets.QWidget):
 
         expected, recorded = sim.expected_e, sim.recorded_e
         if self.contrast == CONTRAST_MODES[2]:
-            lo_r = 0.0
-            hi_r = (cam.max_adu - cam.offset_adu) * cam.adc_gain_e_per_adu / lv.gain
-            lo_e, hi_e = lo_r, hi_r
+            lo_e, hi_e = info.full_scale
+            lo_r, hi_r = lo_e, hi_e
         elif self.contrast == CONTRAST_MODES[1]:
             lo_e, hi_e = (float(v) for v in np.percentile(expected, (0.1, 99.5)))
             lo_r, hi_r = (float(v) for v in np.percentile(recorded, (0.1, 99.5)))
@@ -485,43 +470,83 @@ class NoiseWidget(QtWidgets.QWidget):
             lo_r, hi_r = lo_e, hi_e
         sat = sim.saturated if self.show_saturation else None
         self.images.optical.show_image(
-            to_qimage(expected, lo_e, hi_e, self.lut, nm), field_cam,
-            f"{sim.pixel_um * 1000:.0f} nm px · {expected.shape[0]}² px",
+            to_qimage(expected, lo_e, hi_e, self.lut, nm), fx, info.optical_caption, fy, origin,
         )
         self.images.recorded.show_image(
-            to_qimage(recorded, lo_r, hi_r, self.lut, nm, saturated=sat), field_cam,
-            f"{lv.frames} frame(s) · {lv.exposure_ms:g} ms" + (" · red = clipped" if sat is not None and sat.any() else ""),
+            to_qimage(recorded, lo_r, hi_r, self.lut, nm, saturated=sat), fx,
+            info.recorded_caption + (" · red = clipped" if sat is not None and sat.any() else ""), fy, origin,
         )
         noise = recorded - expected
         sd = float(noise.std()) or 1.0
         self.images.noise.show_image(
-            to_qimage(noise, -3 * sd, 3 * sd, diverging=True), field_cam,
-            f"rms {sd:.3g} e- · blue below, orange above",
+            to_qimage(noise, -3 * sd, 3 * sd, diverging=True), fx,
+            f"rms {sd:.3g} e- · blue below, orange above", fy, origin,
         )
 
         rect = None
         if self.show_window:
             r0, r1, c0, c1 = reference_window(sim, self.quant_panel.settings())
-            p = sim.pixel_um
-            rect = QtCore.QRectF(c0 * p, r0 * p, (c1 - c0) * p, (r1 - r0) * p)
+            px, py = sim.pixel_x_um, sim.pixel_y_um
+            x0 = sim.col_centres_um[c0] - px / 2
+            y0 = sim.row_centres_um[r0] - py / 2
+            rect = QtCore.QRectF(x0, y0, (c1 - c0) * px, (r1 - r0) * py)
         for pane in self.images.panes():
             pane.set_window(rect)
+        # On the object, outline what was imaged when it is less than the specimen.
+        spec_field = sim.specimen.field_um
+        imaged = QtCore.QRectF(origin[0], origin[1], fx, fy)
+        covers = imaged.width() >= spec_field * 0.95 and imaged.height() >= spec_field * 0.95
+        self.images.object.region_um = None if covers else imaged
+        self.images.object.update()
 
 
 # --- the window ------------------------------------------------------------------
 
 
 class NoiseWindow(QtWidgets.QMainWindow):
-    def __init__(self, levers: Levers | None = None, parent=None):
+    """Two frames, one per instrument, sharing a toolbar: camera and confocal."""
+
+    def __init__(self, levers=None, parent=None, frame: str = "camera"):
         super().__init__(parent)
         self.setWindowTitle("NoiseWidget -- where the noise in a micrograph comes from")
-        self.widget = NoiseWidget(levers)
-        self.setCentralWidget(self.widget)
+        self.frames = QtWidgets.QTabWidget()
+        self.frames.setDocumentMode(True)
+        self.widgets: dict[str, NoiseWidget] = {}
+        for key, modality in MODALITIES.items():
+            start = levers if (levers is not None and isinstance(levers, type(modality.default_levers()))) else None
+            w = NoiseWidget(start, modality=modality)
+            w.summaryChanged.connect(lambda text, w=w: self._summary(w, text))
+            self.widgets[key] = w
+            self.frames.addTab(w, modality.title)
+        self.setCentralWidget(self.frames)
         self._build_toolbar()
-        self.widget.summaryChanged.connect(self.statusBar().showMessage)
-        self.widget.refresh()
+        self.frames.currentChanged.connect(self._frame_changed)
+        if levers is not None:
+            frame = next(k for k, m in MODALITIES.items() if isinstance(levers, type(m.default_levers())))
+        self.frames.setCurrentWidget(self.widgets[frame])
+        self._frame_changed()
         self._warn_about_presets()
-        self.resize(1600, 940)
+        self.resize(1600, 960)
+
+    @property
+    def widget(self) -> NoiseWidget:
+        """The frame in front."""
+        return self.frames.currentWidget()
+
+    def _summary(self, w: NoiseWidget, text: str) -> None:
+        if w is self.widget:
+            self.statusBar().showMessage(text)
+
+    def _frame_changed(self, _index: int = 0) -> None:
+        for w in self.widgets.values():
+            w.set_live(w is self.widget and self.live.isChecked())
+        self.presets.blockSignals(True)
+        self.presets.clear()
+        self.presets.addItem("--")
+        for name in self.widget.modality.presets:
+            self.presets.addItem(name)
+        self.presets.blockSignals(False)
+        self.widget.refresh()
 
     def _build_toolbar(self) -> None:
         bar = self.addToolBar("main")
@@ -531,34 +556,32 @@ class NoiseWindow(QtWidgets.QMainWindow):
         new.setShortcut("Ctrl+R")
         new.setToolTip("record the same scene again: same light, same specimen, new noise")
         # QAction.triggered carries a `checked` bool; swallow it.
-        new.triggered.connect(lambda _checked=False: self.widget.new_noise())
+        new.triggered.connect(lambda _checked=False: self.widget.new_noise())  # the frame in front
         bar.addAction(new)
 
         self.live = QtGui.QAction("Live", self, checkable=True, checked=False)
         self.live.setShortcut("Space")
         self.live.setToolTip("stream frames, as the camera would: noise moves, signal stays")
-        self.live.toggled.connect(self.widget.set_live)
+        self.live.toggled.connect(lambda on: self.widget.set_live(on))
         bar.addAction(self.live)
 
         bar.addSeparator()
         bar.addWidget(QtWidgets.QLabel("  preset: "))
         self.presets = QtWidgets.QComboBox()
         self.presets.addItem("--")
-        for name in PRESETS:
-            self.presets.addItem(name)
         self.presets.setToolTip("starting points that each demonstrate one thing")
         self.presets.currentTextChanged.connect(self._preset_chosen)
         bar.addWidget(self.presets)
 
         reset = QtGui.QAction("Reset", self)
-        reset.triggered.connect(lambda _checked=False: self.widget.set_levers(Levers()))
+        reset.triggered.connect(lambda _checked=False: self.widget.set_levers(self.widget.modality.default_levers()))
         bar.addAction(reset)
 
         bar.addSeparator()
         bar.addWidget(QtWidgets.QLabel("  LUT: "))
         self.lut = QtWidgets.QComboBox()
         self.lut.addItems(list(LUTS))
-        self.lut.currentTextChanged.connect(lambda t: self.widget.set_display(lut=t))
+        self.lut.currentTextChanged.connect(lambda t: self._display(lut=t))
         bar.addWidget(self.lut)
         bar.addWidget(QtWidgets.QLabel("  contrast: "))
         self.contrast = QtWidgets.QComboBox()
@@ -567,13 +590,13 @@ class NoiseWindow(QtWidgets.QMainWindow):
             "shared: the recording uses the noise-free image's display range, so noise "
             "looks as large as it is. Auto rescales each pane, which flatters a dim image."
         )
-        self.contrast.currentTextChanged.connect(lambda t: self.widget.set_display(contrast=t))
+        self.contrast.currentTextChanged.connect(lambda t: self._display(contrast=t))
         bar.addWidget(self.contrast)
         window = QtGui.QAction("Measured region", self, checkable=True, checked=True)
-        window.toggled.connect(lambda on: self.widget.set_display(show_window=on))
+        window.toggled.connect(lambda on: self._display(show_window=on))
         bar.addAction(window)
         sat = QtGui.QAction("Show clipping", self, checkable=True, checked=True)
-        sat.toggled.connect(lambda on: self.widget.set_display(show_saturation=on))
+        sat.toggled.connect(lambda on: self._display(show_saturation=on))
         bar.addAction(sat)
 
         bar.addSeparator()
@@ -582,15 +605,21 @@ class NoiseWindow(QtWidgets.QMainWindow):
         help_action.triggered.connect(lambda _checked=False: self.show_help())
         bar.addAction(help_action)
 
+    def _display(self, **settings) -> None:
+        """Display settings apply to both frames, so switching keeps the look."""
+        for w in self.widgets.values():
+            w.set_display(**settings)
+
     def _preset_chosen(self, name: str) -> None:
-        if name in PRESETS:
+        presets = self.widget.modality.presets
+        if name in presets:
             self.widget.load_preset(name)
-            self.statusBar().showMessage(PRESETS[name].description, 8000)
+            self.statusBar().showMessage(presets[name].description, 8000)
 
     def _warn_about_presets(self) -> None:
         """Say where the camera and dye numbers come from, where it will be seen."""
         banner = QtWidgets.QLabel(
-            "Camera and dye figures are typical-of-class, not vendor datasheets; "
+            "Camera, detector and dye figures are typical-of-class, not vendor datasheets; "
             "bleaching budgets are orders of magnitude."
         )
         banner.setWordWrap(True)
@@ -603,9 +632,13 @@ class NoiseWindow(QtWidgets.QMainWindow):
         box.setTextFormat(QtCore.Qt.RichText)
         box.setText("<b>Turn a lever, watch the image, the graph and the measurement follow.</b>")
         box.setInformativeText(
+            "<p><b>Two frames</b>: a camera on a widefield microscope, and a point-scanning "
+            "confocal. The camera exposes every pixel at once; the confocal visits each pixel "
+            "for a dwell time, through a pinhole, onto a single detector — so its levers are "
+            "dwell, zoom, pixel format, pinhole, laser power and detector gain.</p>"
             "<p><b>Images</b>, left to right: the specimen as it really is (fluorophore "
-            "positions on a 25 nm grid); the image the optics form, integrated over camera "
-            "pixels, with no noise; what the camera records; and the difference — the "
+            "positions on a 25 nm grid); the image the optics form, sampled by the camera "
+            "pixels or the scan, with no noise; what is recorded; and the difference — the "
             "noise itself.</p>"
             "<p><b>The graph</b> plots every noise source in electrons against signal (or "
             "exposure, or excitation). Read noise is flat, shot noise rises as √S, fixed "
@@ -627,8 +660,8 @@ class NoiseWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-def launch(levers: Levers | None = None) -> int:
+def launch(levers=None, frame: str = "camera") -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = NoiseWindow(levers)
+    window = NoiseWindow(levers, frame=frame)
     window.show()
     return app.exec()

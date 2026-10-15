@@ -223,6 +223,75 @@ class Simulation:
     def camera(self) -> Camera:
         return self.levers.camera_model
 
+    # --- what quantitation needs (see quantitation.Measurable) ---------------
+
+    @property
+    def pixel_x_um(self) -> float:
+        return self.pixel_um
+
+    @property
+    def pixel_y_um(self) -> float:
+        return self.pixel_um
+
+    @property
+    def row_centres_um(self) -> np.ndarray:
+        return (np.arange(self.signal_e.shape[0]) + 0.5) * self.pixel_um
+
+    @property
+    def col_centres_um(self) -> np.ndarray:
+        return (np.arange(self.signal_e.shape[1]) + 0.5) * self.pixel_um
+
+    @property
+    def psf_sigma_um(self) -> float:
+        return optics.gaussian_sigma_um(self.levers.wavelength_um, self.levers.na)
+
+    @property
+    def detected_per_fluor(self) -> float:
+        """Photoelectrons one fluorophore puts into the whole image, per frame."""
+        return self.photometry.detected_e
+
+    @property
+    def noise_seed(self) -> int:
+        return self.levers.noise_seed
+
+    def rerecord(self, crop: tuple[slice, slice], realizations: int, rng: np.random.Generator) -> np.ndarray:
+        """Record a crop of the same scene many times; ``(R, h, w)`` electrons."""
+        lv = self.levers
+        pattern = FixedPattern(self.pattern.gain[crop], self.pattern.dark_scale[crop], self.pattern.read_noise_e[crop])
+        light = ((self.signal_e + self.background_e) * self.pattern.gain)[crop]
+        thermal = (self.dark_e * self.pattern.dark_scale + self.cic_e)[crop]
+        shape = (realizations,) + light.shape
+        stack = FixedPattern(
+            np.broadcast_to(pattern.gain, shape),
+            np.broadcast_to(pattern.dark_scale, shape),
+            np.broadcast_to(pattern.read_noise_e, shape),
+        )
+        stack_thermal = np.broadcast_to(thermal, shape)
+        adu, _ = acquire(np.broadcast_to(light, shape), stack_thermal, lv, stack, rng, max(lv.frames, 1))
+        return calibrate(adu_to_electrons(adu, lv), lv, stack, stack_thermal)
+
+    def line_response(self, r0: int, r1: int) -> np.ndarray:
+        """Noise-free rows ``r0:r1`` of the image of a thin line of unit brightness.
+
+        The model's own line spread function, placed where the reference is and
+        integrated over the same pixel rows: it sums to ~1 over a wide window.
+        """
+        spec = self.specimen
+        n = spec.density.shape[0]
+        dx = spec.dx_um
+        _, cy = spec.reference.centre_um
+        g = cy / dx - 0.5
+        line = np.zeros(n)
+        i = int(math.floor(g))
+        line[i % n] += 1 - (g - i)
+        line[(i + 1) % n] += g - i
+        lsf = optics.line_spread(n, dx, self.levers.wavelength_um, self.levers.na)
+        blurred = np.real(np.fft.ifft(np.fft.fft(line) * np.fft.fft(lsf)))
+        count = int(math.floor(n * dx / self.pixel_um + 1e-9))
+        edges = np.arange(count + 1) * (self.pixel_um / dx)
+        cum = np.concatenate([[0.0], np.cumsum(blurred)])
+        return np.diff(np.interp(edges, np.arange(n + 1), cum))[r0:r1]
+
 
 class Simulator:
     """Runs :func:`Levers` through the chain, caching the expensive optics."""

@@ -65,26 +65,42 @@ class ImagePane(QtWidgets.QWidget):
         self.title = title
         self.caption = ""
         self.image: QtGui.QImage | None = None
-        self.field_um = 1.0
+        self.field_um = 1.0  # x extent
+        self.field_y_um = 1.0
+        self.origin_um = (0.0, 0.0)  # specimen coordinates of the image's top-left corner
         self.window_um: QtCore.QRectF | None = None  # measured region, in um
+        self.region_um: QtCore.QRectF | None = None  # e.g. the area a scanner covers
         self.message = "--"
         self.setMinimumSize(170, 190)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
-    def show_image(self, qimage: QtGui.QImage, field_um: float, caption: str = "") -> None:
+    def show_image(self, qimage: QtGui.QImage, field_um: float, caption: str = "",
+                   field_y_um: float | None = None, origin_um: tuple[float, float] = (0.0, 0.0)) -> None:
+        """Show an image covering ``field_um`` x ``field_y_um`` of the specimen.
+
+        Pixels need not be square -- a scanner can sample x and y differently --
+        so the image is drawn at its physical aspect, not its pixel aspect.
+        """
         self.image = qimage
         self.field_um = field_um
+        self.field_y_um = field_um if field_y_um is None else field_y_um
+        self.origin_um = origin_um
         self.caption = caption
         self.update()
 
     def set_window(self, rect_um: QtCore.QRectF | None) -> None:
+        """The measured region, in specimen coordinates (um)."""
         self.window_um = rect_um
         self.update()
 
     def image_rect(self) -> QtCore.QRectF:
         top, bottom = 18, 18
-        side = max(min(self.width() - 4, self.height() - top - bottom), 10)
-        return QtCore.QRectF((self.width() - side) / 2, top, side, side)
+        box_w = max(self.width() - 4, 10)
+        box_h = max(self.height() - top - bottom, 10)
+        aspect = self.field_y_um / self.field_um if self.field_um > 0 else 1.0
+        w = min(box_w, box_h / aspect)
+        h = w * aspect
+        return QtCore.QRectF((self.width() - w) / 2, top, w, h)
 
     def paintEvent(self, _event) -> None:
         p = QtGui.QPainter(self)
@@ -108,10 +124,15 @@ class ImagePane(QtWidgets.QWidget):
         p.drawImage(rect, self.image)
 
         scale = rect.width() / self.field_um  # screen px per um
+        if self.region_um is not None:
+            r = self.region_um.translated(-self.origin_um[0], -self.origin_um[1])
+            p.setPen(QtGui.QPen(QtGui.QColor("#d9a441"), 1.5))
+            p.drawRect(QtCore.QRectF(rect.left() + r.left() * scale, rect.top() + r.top() * scale,
+                                     r.width() * scale, r.height() * scale))
         if self.window_um is not None:
             pen = QtGui.QPen(QtGui.QColor("#e6edf3"), 1, QtCore.Qt.DashLine)
             p.setPen(pen)
-            w = self.window_um
+            w = self.window_um.translated(-self.origin_um[0], -self.origin_um[1])
             p.drawRect(QtCore.QRectF(rect.left() + w.left() * scale, rect.top() + w.top() * scale,
                                      w.width() * scale, w.height() * scale))
 

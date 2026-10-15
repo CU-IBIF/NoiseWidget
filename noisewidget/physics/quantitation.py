@@ -26,11 +26,51 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import optics
-from .acquisition import Simulation, acquire, adu_to_electrons, calibrate
-from .camera import FixedPattern
+from typing import Protocol
+
+from .specimens import Specimen
 
 FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
+
+
+class Measurable(Protocol):
+    """What a simulation must offer to be measured -- camera or point scanner.
+
+    Rows run across the reference structure (``pixel_y_um`` apart) and columns
+    along it (``pixel_x_um`` apart). A camera's pixels are square; a scanner's
+    need not be, and its rows are lines the beam visits rather than areas it
+    integrates, which is why sampling is behind methods rather than assumed.
+    """
+
+    specimen: Specimen
+    signal_e: np.ndarray
+    expected_e: np.ndarray
+    recorded_e: np.ndarray
+
+    @property
+    def pixel_x_um(self) -> float: ...
+
+    @property
+    def row_centres_um(self) -> np.ndarray: ...
+
+    @property
+    def col_centres_um(self) -> np.ndarray: ...
+
+    @property
+    def pixel_y_um(self) -> float: ...
+
+    @property
+    def psf_sigma_um(self) -> float: ...
+
+    @property
+    def detected_per_fluor(self) -> float: ...
+
+    @property
+    def noise_seed(self) -> int: ...
+
+    def rerecord(self, crop: tuple[slice, slice], realizations: int, rng: np.random.Generator) -> np.ndarray: ...
+
+    def line_response(self, r0: int, r1: int) -> np.ndarray: ...
 
 
 @dataclass(frozen=True)
@@ -40,27 +80,23 @@ class QuantSettings:
     seed: int = 99
 
 
-def half_width_um(sim: Simulation) -> float:
+def half_width_um(sim: Measurable) -> float:
     """Half-height of the window across the reference, in um.
 
     Wide enough to hold the profile's tails and some background on either side,
     but inside the clear box the specimen keeps around the reference.
     """
-    lv = sim.levers
-    sigma = math.hypot(
-        optics.gaussian_sigma_um(lv.wavelength_um, lv.na), sim.specimen.kind.label_sigma_nm / 1000
-    )
-    return min(max(6.0 * sigma, 5.0 * sim.pixel_um), 1.7)
+    sigma = math.hypot(sim.psf_sigma_um, sim.specimen.kind.label_sigma_nm / 1000)
+    return min(max(6.0 * sigma, 5.0 * sim.pixel_y_um), 1.7)
 
 
-def reference_window(sim: Simulation, settings: QuantSettings | None = None) -> tuple[int, int, int, int]:
-    """Camera-pixel bounds ``(row0, row1, col0, col1)`` of the measured region."""
+def reference_window(sim: Measurable, settings: QuantSettings | None = None) -> tuple[int, int, int, int]:
+    """Pixel bounds ``(row0, row1, col0, col1)`` of the measured region."""
     settings = settings or QuantSettings()
-    p = sim.pixel_um
     rows, cols = sim.signal_e.shape
     cx, cy = sim.specimen.reference.centre_um
     hw = half_width_um(sim)
-    centres_r = (np.arange(rows) + 0.5) * p
+    centres_r = sim.row_centres_um
     sel_r = np.nonzero(np.abs(centres_r - cy) <= hw)[0]
     if sel_r.size < 5:  # a fit needs points; take the nearest five
         k = int(np.argmin(np.abs(centres_r - cy)))
@@ -69,7 +105,7 @@ def reference_window(sim: Simulation, settings: QuantSettings | None = None) -> 
         half_len = settings.profile_length_um / 2.0
     else:
         half_len = hw
-    centres_c = (np.arange(cols) + 0.5) * p
+    centres_c = sim.col_centres_um
     sel_c = np.nonzero(np.abs(centres_c - cx) <= half_len)[0]
     if sel_c.size == 0:
         k = int(np.argmin(np.abs(centres_c - cx)))
@@ -170,7 +206,7 @@ class Instrument:
     sum_recovery: float  # fraction a background-subtracted sum over the window recovers
 
 
-def instrument_response(sim: Simulation, window: tuple[int, int, int, int]) -> Instrument:
+def instrument_response(sim: Measurable, window: tuple[int, int, int, int]) -> Instrument:
     """Fit this system's own image of an infinitely thin line.
 
     The calibration a careful user makes with a sub-resolution bead: the model's
@@ -184,28 +220,15 @@ def instrument_response(sim: Simulation, window: tuple[int, int, int, int]) -> I
     taken for background, so both a fit and a sum under-count a little; dividing by
     the recovery is the bead calibration that corrects it.
     """
-    lv = sim.levers
-    spec = sim.specimen
-    n = spec.density.shape[0]
-    dx = spec.dx_um
-    _, cy = spec.reference.centre_um
-    g = cy / dx - 0.5
-    line = np.zeros(n)
-    i = int(math.floor(g))
-    line[i % n] += 1 - (g - i)
-    line[(i + 1) % n] += g - i
-    lsf = optics.line_spread(n, dx, lv.wavelength_um, lv.na)
-    blurred = np.real(np.fft.ifft(np.fft.fft(line) * np.fft.fft(lsf)))
-    count = int(math.floor(n * dx / sim.pixel_um + 1e-9))
-    edges = np.arange(count + 1) * (sim.pixel_um / dx)
-    cum = np.concatenate([[0.0], np.cumsum(blurred)])
-    binned = np.diff(np.interp(edges, np.arange(n + 1), cum))
+    _, cy = sim.specimen.reference.centre_um
     r0, r1, _, _ = window
-    x = (np.arange(r0, r1) + 0.5) * sim.pixel_um - cy
-    params, _ = fit_gaussians(x, binned[r0:r1][None, :])
+    py = sim.pixel_y_um
+    response = sim.line_response(r0, r1)
+    x = sim.row_centres_um[r0:r1] - cy
+    params, _ = fit_gaussians(x, response[None, :])
     a, _, sigma, b = (float(v) for v in params[0])
-    fit_area = a * sigma * math.sqrt(2 * math.pi) / sim.pixel_um
-    summed = float((binned[r0:r1] - b).sum())
+    fit_area = a * sigma * math.sqrt(2 * math.pi) / py
+    summed = float((response - b).sum())
     return Instrument(sigma, fit_area, summed)
 
 
@@ -277,7 +300,8 @@ class Quantitation:
     instrument_sigma_um: float  # fitted to this system's own line image
     fit_recovery: float
     sum_recovery: float
-    pixel_um: float
+    pixel_um: float  # pitch across the structure (rows)
+    pixel_x_um: float  # pitch along it (columns)
     predicted_fwhm_um: float
     detected_per_fluor: float
     window_length_um: float
@@ -285,52 +309,43 @@ class Quantitation:
     @property
     def single_count(self) -> float:
         """This frame's fitted count, calibrated like the realizations."""
-        raw = _area_to_count(self.fit.amplitude, self.fit.sigma_um, self.pixel_um, self.kind, self.detected_per_fluor)
+        raw = _area_to_count(
+            self.fit.amplitude, self.fit.sigma_um, self.pixel_um, self.pixel_x_um, self.kind, self.detected_per_fluor
+        )
         return raw / self.fit_recovery
 
 
-def _area_to_count(a, s, p, kind, per_fluor):
+def _area_to_count(a, s, py, px, kind, per_fluor):
     """Fluorophores from a fitted profile.
 
-    The profile is sampled once per pixel, so its integral in electrons is
-    ``A s sqrt(2 pi) / p``. For a filament the profile is a per-column mean, so that
-    is electrons per column, and dividing by ``p`` again makes it per um.
+    The profile is sampled once per row, so its integral in electrons is
+    ``A s sqrt(2 pi) / py``. For a filament the profile is a per-column mean, so
+    that is electrons per column, and dividing by the column pitch ``px`` makes it
+    per um.
     """
-    area = a * s * math.sqrt(2 * math.pi) / p if np.isscalar(a) else a * s * np.sqrt(2 * np.pi) / p
+    area = a * s * math.sqrt(2 * math.pi) / py if np.isscalar(a) else a * s * np.sqrt(2 * np.pi) / py
     if kind == "filament":
-        area = area / p
+        area = area / px
     return area / per_fluor if per_fluor > 0 else area * math.nan
 
 
-def quantify(sim: Simulation, settings: QuantSettings | None = None) -> Quantitation:
+def quantify(sim: Measurable, settings: QuantSettings | None = None) -> Quantitation:
     settings = settings or QuantSettings()
-    lv = sim.levers
     kind = sim.specimen.kind
     window = reference_window(sim, settings)
     r0, r1, c0, c1 = window
-    p = sim.pixel_um
+    py, px = sim.pixel_y_um, sim.pixel_x_um
     cx, cy = sim.specimen.reference.centre_um
-    x = (np.arange(r0, r1) + 0.5) * p - cy
+    x = sim.row_centres_um[r0:r1] - cy
 
     measured = profile(sim.recorded_e, window, kind.kind)
     expected = profile(sim.expected_e, window, kind.kind)
 
     # Re-record just this region, many times, with fresh noise each time.
     crop = (slice(r0, r1), slice(c0, c1))
-    pattern = FixedPattern(sim.pattern.gain[crop], sim.pattern.dark_scale[crop], sim.pattern.read_noise_e[crop])
-    light = ((sim.signal_e + sim.background_e) * sim.pattern.gain)[crop]
-    thermal = (sim.dark_e * sim.pattern.dark_scale + sim.cic_e)[crop]
     R = max(int(settings.realizations), 2)
-    rng = np.random.default_rng(settings.seed + lv.noise_seed * 7)
-    stack_light = np.broadcast_to(light, (R,) + light.shape)
-    stack_pattern = FixedPattern(
-        np.broadcast_to(pattern.gain, stack_light.shape),
-        np.broadcast_to(pattern.dark_scale, stack_light.shape),
-        np.broadcast_to(pattern.read_noise_e, stack_light.shape),
-    )
-    stack_thermal = np.broadcast_to(thermal, stack_light.shape)
-    adu, _ = acquire(stack_light, stack_thermal, lv, stack_pattern, rng, max(lv.frames, 1))
-    frames_e = calibrate(adu_to_electrons(adu, lv), lv, stack_pattern, stack_thermal)
+    rng = np.random.default_rng(settings.seed + sim.noise_seed * 7)
+    frames_e = sim.rerecord(crop, R, rng)
     profiles = profile(frames_e, (0, r1 - r0, 0, c1 - c0), kind.kind)
 
     all_profiles = np.vstack([measured[None, :], expected[None, :], profiles])
@@ -344,7 +359,7 @@ def quantify(sim: Simulation, settings: QuantSettings | None = None) -> Quantita
     mc, mc_ok = params[2:], ok[2:]
     good = mc[mc_ok]
 
-    psf_sigma = optics.gaussian_sigma_um(lv.wavelength_um, lv.na)
+    psf_sigma = sim.psf_sigma_um
     response = instrument_response(sim, window)
     instrument = response.sigma_um
     widths = good[:, 2] if good.size else np.empty(0)
@@ -359,8 +374,8 @@ def quantify(sim: Simulation, settings: QuantSettings | None = None) -> Quantita
 
     # Ground truth: count the labels that were actually placed in the window.
     ref = sim.specimen.reference
-    x0, x1 = c0 * p, c1 * p
-    y0, y1 = r0 * p, r1 * p
+    x0, x1 = sim.col_centres_um[c0] - px / 2, sim.col_centres_um[c1 - 1] + px / 2
+    y0, y1 = sim.row_centres_um[r0] - py / 2, sim.row_centres_um[r1 - 1] + py / 2
     if kind.kind == "filament":
         length = x1 - x0
         present = ref.count_within(x0, x1, y0, y1) / length
@@ -377,14 +392,14 @@ def quantify(sim: Simulation, settings: QuantSettings | None = None) -> Quantita
     hist, edges = np.histogram(ref.y[near] - cy, bins=ox, weights=ref.weight[near])
     centres = 0.5 * (edges[:-1] + edges[1:])
 
-    per_fluor = sim.photometry.detected_e
-    counts = _area_to_count(good[:, 0], good[:, 2], p, kind.kind, per_fluor) if good.size else np.empty(0)
+    per_fluor = sim.detected_per_fluor
+    counts = _area_to_count(good[:, 0], good[:, 2], py, px, kind.kind, per_fluor) if good.size else np.empty(0)
     counts = counts / response.fit_recovery
     # Aperture photometry: no model, so no model bias -- but every pixel's noise
     # goes into the sum, so it is noisier than the fit.
     summed = (profiles[mc_ok] - good[:, 3:4]).sum(axis=1) if good.size else np.empty(0)
     if kind.kind == "filament":
-        summed = summed / p
+        summed = summed / px
     summed = summed / per_fluor if per_fluor > 0 else summed * math.nan
     summed = summed / response.sum_recovery
 
@@ -415,8 +430,9 @@ def quantify(sim: Simulation, settings: QuantSettings | None = None) -> Quantita
         instrument_sigma_um=instrument,
         fit_recovery=response.fit_recovery,
         sum_recovery=response.sum_recovery,
-        pixel_um=p,
+        pixel_um=py,
+        pixel_x_um=px,
         predicted_fwhm_um=predicted,
-        detected_per_fluor=sim.photometry.detected_e,
+        detected_per_fluor=per_fluor,
         window_length_um=length,
     )

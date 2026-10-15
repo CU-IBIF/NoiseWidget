@@ -58,3 +58,25 @@ def test_the_read_noise_preset_is_read_noise_affected_and_binning_helps():
     assert dim.fractions()["read"] > 0.25
     assert binned.snr > dim.snr
     assert emccd.fractions()["read"] < 0.01
+
+
+def test_confocal_frame_report(capsys):
+    assert main(["--frame", "confocal", "--realizations", "10", "--set", "mode=counting"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("[confocal]")
+    for heading in ("-- optics and scanning --", "-- detector and noise --", "-- quantitation --"):
+        assert heading in out
+
+
+def test_a_confocal_preset_selects_its_frame(capsys):
+    assert main(["--preset", "Gain too low", "--realizations", "10"]) == 0
+    assert "[confocal]" in capsys.readouterr().out
+
+
+def test_set_works_on_confocal_levers():
+    from noisewidget.physics.confocal import ScanLevers
+
+    lv = parse_assignment(ScanLevers(), "pixels_y=128")
+    assert lv.pixels_y == 128
+    lv = parse_assignment(lv, "dead_time=off")
+    assert lv.noise.dead_time is False

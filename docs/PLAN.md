@@ -67,7 +67,50 @@ re-recorded R times (only the measured crop, so it stays interactive), giving:
   placed.
 * **Position**: scatter of the fitted centre against the shot-noise floor σ/√N.
 
-## 5. What is not modelled
+## 5. The point-scanning confocal
+
+A second frame, `physics/confocal.py`, with the same contract.
+
+```
+excitation  I(r) = I0 h_ex(r)/h_ex(0),  I0 = P h_ex(0)/dx^2      ~ P pi NA^2 / lambda_ex^2
+emission    E(r) = QY k/(1 + k tau),  k = sigma I / h nu           saturates near kW-MW/cm^2
+detection   D(r) = (h_em (x) pinhole)(r),  pinhole radius AU x 0.61 lambda_em / NA
+kernel      K = E D;   image = object (x) K x CE x T x QE x dwell
+sampling    x: box average over px (the beam sweeps); y: point sample per line
+field       FN / (M zoom);  px = field / Nx,  py = field / Ny  (independent)
+```
+
+* **Photons per pixel** follow dwell, power and the pinhole, not the pixel size: a
+  scanner's pixel is a dwell, not an area. What finer sampling changes is the
+  **dose**. Each fluorophore is lit at every pixel near it, so the emitted photons
+  per frame are `dwell / (px py) x int E dA`. Halving the pixel size quadruples the
+  bleaching.
+* **Out-of-focus haze** is a uniform emitter sheet scaled by `AU^2 / (1 + AU^2)`, a
+  pedagogical stand-in for how much the pinhole admits, not a 3D model.
+* **Detectors**:
+  * analog: Poisson photoelectrons, then a gamma-distributed gain cascade with excess
+    noise F², then amplifier noise in ADU, then rounding, offset, and clipping at
+    0 and at full scale;
+  * photon counting: Poisson counts with non-paralyzable dead time
+    `m = n / (1 + n tau / dwell)`, with optional correction;
+  * both: dark counts that double every ~6 °C, afterpulsing, and laser RIN as
+    multiplicative noise.
+* **The budget**: `F^2 (S + B + D) + (sigma_amp/g)^2 + 1/(12 g^2) + (RIN (S + B))^2`,
+  divided by the averages. Tests check it against the simulated variance for every
+  analog detector, and check counting against Poisson.
+* **Nyquist**: `1 / (2 (2NA/lambda_ex + 2NA/lambda_em))` (~lambda_ex/8NA) for a small
+  pinhole, relaxing to `lambda_ex / 4NA` wide open. It is checked separately in x and
+  y.
+* **Quantitation** is shared. It works on anything that offers pixel centres, a
+  re-record of a crop, and the noise-free image of a thin line (the `Measurable`
+  protocol), so the scanner's anisotropic, point-sampled rows are measured exactly as
+  sampled.
+
+Not modelled for the scanner: line jitter and scanner nonlinearity, resonant-scanner
+sinusoidal dwell, triplet-state saturation (only singlet depletion), and axial
+sectioning beyond the haze factor.
+
+## 6. What is not modelled
 
 * Vectorial high-NA PSF (scalar paraxial; real PSFs above NA 1.2 are a few % wider) and
   aberrations, including spherical aberration from index mismatch.
@@ -77,7 +120,7 @@ re-recorded R times (only the measured crop, so it stays interactive), giving:
 * Blinking, triplet states, phototoxicity, drift, vibration, cosmic rays.
 * sCMOS rolling shutter, and amplifier glow in long exposures.
 
-## 6. Layout
+## 7. Layout
 
 ```
 noisewidget/
@@ -89,10 +132,14 @@ noisewidget/
     acquisition.py    levers -> recorded image; the analytic budget and sweeps
     quantitation.py   profiles, batched Gaussian fits, repeat-frame statistics
     report.py         every derived number, with its equation
-    presets.py        starting points that each make one point
+    presets.py        starting points that each make one point (both frames)
+    confocal.py       point scanning: kernel, pinhole, scan sampling, detectors, budget
+    scan_report.py    the confocal's explained numbers
   ui/               PySide6
     widget.py         NoiseWidget (embeddable), NoiseWindow, graph and quantitation panes
-    controls.py       the lever panel
+    modality.py       what differs between the two frames, in one place
+    controls.py       the camera's lever panel
+    scan_controls.py  the confocal's lever panel
     panes.py          image panes (nearest-neighbour, scale bar, overlays)
     plots.py          QPainter plots with hover read-out
 ```
