@@ -1,0 +1,68 @@
+BSD 3-Clause License
+
+Copyright (c) 2026, Creighton University
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+
+ADDITIONAL DISCLAIMER
+
+This software, its source code, its documentation, and any results, images,
+figures, numbers, reports, or files it produces (together, "the Software") are
+provided "AS IS" and "AS AVAILABLE", with all faults, and without warranty,
+guarantee, or representation of any kind, whether express, implied, or
+statutory. Without limiting the foregoing, Creighton University and the
+contributors expressly disclaim any warranty or guarantee of merchantability,
+fitness for any particular purpose, accuracy, completeness, reliability,
+timeliness, non-infringement, or that the Software will be free of errors or
+defects or will operate without interruption.
+
+The Software is NOT FIT FOR ANY PURPOSE, WHETHER STATED OR IMPLIED. Any purpose,
+use, or capability described in the Software, its documentation, its user
+interface, or any related material is illustrative only and does not create
+any warranty or guarantee. The Software is a simplified educational model. It
+is not intended or validated for clinical, diagnostic, therapeutic, or
+regulatory use, for the design, purchase, alignment, or operation of any real
+instrument, or for any decision on which health, safety, property, or research
+conclusions depend. Its results may be incomplete or wrong and must be
+independently verified before being relied upon for any purpose.
+
+No support, maintenance, updates, or corrections are promised. No oral or
+written information or advice given by Creighton University, its employees, or
+the contributors creates any warranty or obligation.
+
+You use the Software entirely at your own risk and are solely responsible for
+any consequences of that use. To the maximum extent permitted by applicable
+law, in no event shall Creighton University, its trustees, officers,
+employees, or agents, or the contributors be liable for any claim, loss, or
+damages of any kind, whether direct, indirect, incidental, special,
+consequential, or exemplary, arising out of or in connection with the
+Software or its use, however caused and on any theory of liability.
+
+Where applicable law does not allow the exclusion of certain warranties or
+the limitation of certain liabilities, the above exclusions and limitations
+apply to the fullest extent that law permits.
